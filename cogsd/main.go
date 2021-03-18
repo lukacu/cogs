@@ -18,7 +18,7 @@ import (
 
 var (
 	listenUDS string = "/var/run/cogs.sock"
-	listenTCP string = ":9000"
+	listenTCP string = ":9110"
 	binarySMI string = "nvidia-smi"
 	docker    string = "/var/run/docker.sock"
 
@@ -64,6 +64,11 @@ func serveAPI(w http.ResponseWriter, req *http.Request) {
 	jsonrpc.ServeConn(conn)
 }
 
+func OnClaim(c Claim) {
+	log.Printf("Claim %d: %d ", c.DeviceNumber, c.PID)
+
+}
+
 func main() {
 
 	flag.StringVar(&listenUDS, "listen-uds", lookupEnvOrString("COGS_UDS_SOCKET", listenUDS), "Listen on Unix Domain socket")
@@ -82,7 +87,7 @@ func main() {
 	err := monitor.start()
 
 	if err != nil {
-		fmt.Println("Unable to start CUDA monitor: %s", err)
+		log.Fatalf("Unable to start CUDA monitor: %s", err)
 		os.Exit(-1)
 	}
 
@@ -93,28 +98,31 @@ func main() {
 	mux.HandleFunc("/", serveRoot)
 	mux.HandleFunc("/api", serveAPI)
 
-	if listenUDS != "" {
-		listener, err := net.Listen("unix", listenUDS)
+	bus.Subscribe("pmon:claim", OnClaim)
 
-		if err == nil {
-			fmt.Println("Unable to open UDS socket on %s: %s", listenUDS, err)
-			os.Exit(-1)
-		}
+	/*
+		if listenUDS != "" {
+			listener, err := net.Listen("unix", listenUDS)
 
-		go func() {
-			http.Serve(listener, mux)
+			if err != nil {
+				log.Fatalf("Unable to open UDS socket on %s: %s", listenUDS, err)
+				os.Exit(-1)
+			}
+
+			go func() {
+				http.Serve(listener, mux)
+				waiter.Done()
+			}()
+
+		} else {
 			waiter.Done()
-		}()
-
-	} else {
-		waiter.Done()
-	}
+		}*/
 
 	if listenTCP != "" {
 		listener, err := net.Listen("tcp", listenTCP)
 
-		if err == nil {
-			fmt.Println("Unable to open TCP socket on %s: %s", listenUDS, err)
+		if err != nil {
+			log.Fatalf("Unable to open TCP socket on %s: %s", listenTCP, err)
 			os.Exit(-1)
 		}
 

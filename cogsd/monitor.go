@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/xml"
 	"errors"
+	"log"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -12,7 +13,7 @@ import (
 
 type SMI struct {
 	XMLName xml.Name      `xml:"nvidia_smi_log"`
-	devices []Description `xml:"gpu"`
+	Devices []Description `xml:"gpu"`
 }
 
 type Description struct {
@@ -50,7 +51,7 @@ func split_tokens(c rune) bool {
 }
 
 func parse_int(s string) (int, error) {
-	if s == "-" {
+	if strings.Compare(s, "-") == 0 {
 		return 0, nil
 	} else {
 		i, err := strconv.Atoi(s)
@@ -68,7 +69,7 @@ func parse_ints(tokens []string) ([]int, error) {
 	var conv = []int{}
 
 	for _, i := range tokens {
-		j, err := strconv.Atoi(i)
+		j, err := parse_int(i)
 		if err != nil {
 			return conv, err
 		}
@@ -78,12 +79,15 @@ func parse_ints(tokens []string) ([]int, error) {
 	return conv, nil
 }
 
-func (m Monitor) dmon() error {
+func (m *Monitor) dmon() error {
 	cmd := exec.Command(m.SMIExecutable, "dmon")
 	r, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
 	scanner := bufio.NewScanner(r)
+
 	go func() {
+
+		defer log.Printf("Stopping device monitor")
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -101,12 +105,16 @@ func (m Monitor) dmon() error {
 			values, err := parse_ints(tokens)
 
 			if err != nil {
+				log.Panicf("%s", err)
+
 				continue
 			}
 
 			device, err := m.find(values[0])
 
 			if err != nil {
+				log.Panicf("%s", err)
+
 				continue
 			}
 
@@ -121,15 +129,22 @@ func (m Monitor) dmon() error {
 	// Start the command and check for errors
 	err := cmd.Start()
 
+	if err != nil {
+		log.Printf("Starting device monitor")
+	}
+
 	return err
 }
 
-func (m Monitor) pmon() error {
+func (m *Monitor) pmon() error {
 	cmd := exec.Command(m.SMIExecutable, "pmon")
 	r, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
 	scanner := bufio.NewScanner(r)
+
 	go func() {
+
+		defer log.Printf("Stopping process monitor")
 
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -162,7 +177,7 @@ func (m Monitor) pmon() error {
 				continue
 			}
 
-			bus.Publish("pmon:allocation", Claim{DeviceNumber: id, PID: pid})
+			bus.Publish("pmon:claim", Claim{DeviceNumber: id, PID: pid})
 
 		}
 
@@ -171,10 +186,14 @@ func (m Monitor) pmon() error {
 	// Start the command and check for errors
 	err := cmd.Start()
 
+	if err == nil {
+		log.Printf("Starting process monitor")
+	}
+
 	return err
 }
 
-func (m Monitor) start() error {
+func (m *Monitor) start() error {
 
 	out, err := exec.Command(m.SMIExecutable, "-q", "-x").Output()
 
@@ -185,11 +204,13 @@ func (m Monitor) start() error {
 	var smidata SMI
 	if err = xml.Unmarshal(out, &smidata); err == nil {
 
-		m.Devices = make([]Device, len(smidata.devices))
+		m.Devices = make([]Device, len(smidata.Devices))
 
-		for i, d := range smidata.devices {
+		for i, d := range smidata.Devices {
 
 			m.Devices[i] = Device{UUID: d.UUID, Number: d.Number, Brand: d.Brand, Memory: 0}
+
+			log.Printf("New device %s", d.UUID)
 
 		}
 
@@ -197,11 +218,11 @@ func (m Monitor) start() error {
 		return err
 	}
 
-	if err = m.dmon(); err == nil {
+	if err = m.dmon(); err != nil {
 		return err
 	}
 
-	if err = m.pmon(); err == nil {
+	if err = m.pmon(); err != nil {
 		return err
 	}
 
@@ -209,7 +230,7 @@ func (m Monitor) start() error {
 
 }
 
-func (m Monitor) find(i int) (*Device, error) {
+func (m *Monitor) find(i int) (*Device, error) {
 
 	for _, d := range m.Devices {
 
