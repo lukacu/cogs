@@ -67,6 +67,15 @@ func serveAPI(w http.ResponseWriter, req *http.Request) {
 func OnClaim(c Claim) {
 	log.Printf("Claim %d: %d ", c.DeviceNumber, c.PID)
 
+	user, err := identifyProcess(c.PID)
+
+	if err != nil {
+		log.Printf("Unable to determine owner of process %d: %s", c.PID, err)
+		return
+	}
+
+	log.Printf("Claim %d: %s (pid: %d) ", c.DeviceNumber, user, c.PID)
+
 }
 
 func main() {
