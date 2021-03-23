@@ -41,7 +41,7 @@ func pidToContainer(pid int) (string, error) {
 }
 
 func connectDocker() *client.Client {
-	client, err := client.NewEnvClient()
+	client, err := client.NewClientWithOpts(client.FromEnv)
 
 	if err != nil {
 		panic(err)
@@ -78,15 +78,21 @@ func findContainer(address net.Addr) (string, error) {
 
 }
 
-func identifyProcess(pid int) (string, error) {
+func identifyProcess(pid int) (ProcessInfo, error) {
 
 	container, err := pidToContainer(pid)
 
 	if err != nil {
-		return "", err
+		return ProcessInfo{}, err
 	}
 
-	return findOwner(container)
+	owner, err := findOwner(container)
+
+	if err != nil {
+		return ProcessInfo{}, err
+	}
+
+	return ProcessInfo{PID: pid, Owner: owner, Context: container}, nil
 
 }
 

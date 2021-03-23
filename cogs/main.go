@@ -2,22 +2,56 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 )
 
 type Device struct {
-	Info DeviceInfo `json:"info"`
+	UUID        string `json:"uuid"`
+	Group       string `json:"group"`
+	Name        string
+	Brand       string `json:"brand"`
+	Number      int    `json:"number"`
+	Memory      int    `json:"memory"`
+	Utilization int    `json:"utilization"`
+	Temperature int    `json:"temperature"`
+}
+type ClaimInfo struct {
+	User     string `json:"user"`
+	Duration int64  `json:"duration"`
 }
 
-type DeviceInfo struct {
-	Number int `json:"number"`
+type ProcessInfo struct {
+	PID      int    `json:"pid"`
+	Command  string `json:"command"`
+	Owner    string `json:"owner"`
+	Context  string `json:"context"`
+	Duration int64  `json:"duration"`
+}
+
+type DeviceStatus struct {
+	Info      Device        `json:"info"`
+	Claim     ClaimInfo     `json:"claim"`
+	Processes []ProcessInfo `json:"processes"`
+}
+
+type NodeStatus struct {
+	Devices map[string]DeviceStatus `json:"devices"`
+}
+
+type ClaimStatus struct {
+	Devices []Device `json:"devices"`
 }
 
 func request(serverName string, resourceCount int, timeout int) ([]int, error) {
@@ -45,7 +79,7 @@ func request(serverName string, resourceCount int, timeout int) ([]int, error) {
 
 	defer response.Body.Close()
 
-	var devices []DeviceInfo
+	var result ClaimStatus
 
 	body := new(bytes.Buffer)
 	_, err = body.ReadFrom(response.Body)
@@ -54,7 +88,7 @@ func request(serverName string, resourceCount int, timeout int) ([]int, error) {
 		return nil, err
 	}
 
-	err = json.Unmarshal(body.Bytes(), &devices)
+	err = json.Unmarshal(body.Bytes(), &result)
 
 	if err != nil {
 
@@ -64,7 +98,7 @@ func request(serverName string, resourceCount int, timeout int) ([]int, error) {
 
 	var ids []int
 
-	for _, d := range devices {
+	for _, d := range result.Devices {
 		ids = append(ids, d.Number)
 	}
 
@@ -72,30 +106,97 @@ func request(serverName string, resourceCount int, timeout int) ([]int, error) {
 
 }
 
+func status(server string) error {
+
+	var err error = nil
+	var response *http.Response
+
+	surl, err := url.Parse(server)
+
+	if err != nil {
+		return err
+	}
+
+	if strings.Compare(surl.Scheme, "unix") == 0 {
+
+		client := http.Client{
+			Transport: &http.Transport{
+				DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+					return net.Dial("unix", surl.Path)
+				},
+			},
+		}
+
+		response, err = client.Get("http://cogs/")
+
+	} else {
+
+		client := http.Client{}
+
+		response, err = client.Get(server)
+
+	}
+
+	if err != nil {
+		return err
+	}
+
+	defer response.Body.Close()
+
+	var status NodeStatus
+
+	body := new(bytes.Buffer)
+	_, err = body.ReadFrom(response.Body)
+
+	if err != nil {
+		return err
+	}
+
+	err = json.Unmarshal(body.Bytes(), &status)
+
+	if err != nil {
+
+		return err
+
+	}
+
+	devices := make([]DeviceStatus, len(status.Devices))
+	i := 0
+
+	for _, d := range status.Devices {
+		devices[i] = d
+		i++
+	}
+
+	sort.SliceStable(devices, func(i, j int) bool {
+		return devices[i].Info.Number < devices[j].Info.Number
+	})
+
+	for _, device := range devices {
+
+		log.Printf("%d %d %d", device.Info.Number, device.Info.Utilization, device.Info.Memory)
+
+	}
+
+	return nil
+
+}
+
 func main() {
 
-	var resourceCount = flag.Int("n", 1, "How many GPU resources")
-	var serverName = flag.String("s", "claims", "Resource claims server")
-	var timeout = flag.Int("t", 1, "Wait for resources for duration in seconds")
+	var resourceCount = flag.Int("n", 0, "How many GPUs to claim")
+	var server = flag.String("s", "unix:///var/run/cogs.sock", "CoGS server address")
+	var timeout = flag.Int("t", 1, "Wait for GPUs for duration in seconds (negative value means indefinetely)")
 
 	flag.Parse()
 
 	if flag.Parsed() {
 
-		ids, err := request(*serverName, *resourceCount, *timeout)
-		if err != nil {
-			panic(err)
-		}
-
 		command := flag.Args()
 
-		cuda_ids := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(ids)), ","), "[]")
+		if *resourceCount <= 0 && len(command) == 0 {
 
-		if len(command) > 0 {
-
-			cuda_env := fmt.Sprintf("CUDA_VISIBLE_DEVICES=%s", cuda_ids)
-
-			err = syscall.Exec(command[0], command[1:], []string{cuda_env})
+			err := status(*server)
 
 			if err != nil {
 				panic(err)
@@ -103,8 +204,29 @@ func main() {
 
 		} else {
 
-			fmt.Println(cuda_ids)
-			os.Exit(0)
+			ids, err := request(*server, *resourceCount, *timeout)
+			if err != nil {
+				panic(err)
+			}
+
+			cuda_ids := strings.Trim(strings.Join(strings.Fields(fmt.Sprint(ids)), ","), "[]")
+
+			if len(command) > 0 {
+
+				cuda_env := fmt.Sprintf("CUDA_VISIBLE_DEVICES=%s", cuda_ids)
+
+				err = syscall.Exec(command[0], command[1:], []string{cuda_env})
+
+				if err != nil {
+					panic(err)
+				}
+
+			} else {
+
+				fmt.Println(cuda_ids)
+				os.Exit(0)
+
+			}
 
 		}
 

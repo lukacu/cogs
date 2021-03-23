@@ -1,8 +1,8 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 
 	"github.com/asaskevich/EventBus"
@@ -39,7 +40,7 @@ type ClaimInfo struct {
 }
 
 type ProcessInfo struct {
-	PID      int64  `json:"pid"`
+	PID      int    `json:"pid"`
 	Command  string `json:"command"`
 	Owner    string `json:"owner"`
 	Context  string `json:"context"`
@@ -53,10 +54,14 @@ type DeviceStatus struct {
 }
 
 type NodeStatus struct {
-	Devices map[int]DeviceStatus `json:"devices"`
+	Devices map[string]DeviceStatus `json:"devices"`
 }
 
-var status NodeStatus = NodeStatus{Devices: make(map[int]DeviceStatus)}
+var lock sync.RWMutex = sync.RWMutex{}
+
+var status NodeStatus = NodeStatus{Devices: make(map[string]DeviceStatus)}
+
+var monitor Monitor = Monitor{}
 
 func lookupEnvOrString(key string, defaultVal string) string {
 	if val, ok := os.LookupEnv(key); ok {
@@ -76,9 +81,27 @@ func lookupEnvOrInt(key string, defaultVal int) int {
 	return defaultVal
 }
 
-func serveRoot(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Welcome to the HomePage!")
-	fmt.Println("Endpoint Hit: homePage")
+func APIStatus(w http.ResponseWriter, req *http.Request) {
+	if req.Method != "GET" {
+		http.Error(w, "read only", 405)
+		return
+	}
+
+	lock.RLock()
+	defer lock.RUnlock()
+
+	data, err := json.Marshal(status)
+
+	if err != nil {
+		http.Error(w, "internal error", 500)
+		return
+	}
+
+	w.Header().Add("Content-Type", "application/json")
+	w.Header().Add("Content-Length", strconv.Itoa(len(data)))
+
+	w.Write(data)
+
 }
 
 func serveAPI(w http.ResponseWriter, req *http.Request) {
@@ -98,31 +121,87 @@ func serveAPI(w http.ResponseWriter, req *http.Request) {
 }
 
 func OnClaim(c Claim) {
+
+	lock.Lock()
+	defer lock.Unlock()
+
 	if c.PID == 0 {
-		log.Printf("Claim %d: none ", c.DeviceNumber)
+		log.Printf("Device %d: none ", c.DeviceNumber)
+
+		device, err := monitor.find(c.DeviceNumber)
+
+		if err != nil {
+			return
+		}
+
+		ds, ok := status.Devices[device.UUID]
+
+		if !ok {
+			return
+		}
+
+		ds.Processes = make([]ProcessInfo, 0)
+
+		status.Devices[device.UUID] = ds
+
 		return
 	}
 
-	user, err := identifyProcess(c.PID)
+	info, err := identifyProcess(c.PID)
 
 	if err != nil {
 		log.Printf("Unable to determine owner of process %d: %s", c.PID, err)
 		return
 	}
 
-	log.Printf("Claim %d: %s (pid: %d) ", c.DeviceNumber, user, c.PID)
+	log.Printf("Device %d: %s (PID: %d) ", c.DeviceNumber, info.Owner, c.PID)
+
+	device, err := monitor.find(c.DeviceNumber)
+
+	if err != nil {
+		return
+	}
+
+	ds, ok := status.Devices[device.UUID]
+
+	if !ok {
+		return
+	}
+
+	if ok {
+		exists := false
+		for i, pi := range ds.Processes {
+			if pi.PID == c.PID {
+				ds.Processes[i] = info
+				exists = true
+				break
+			}
+
+		}
+
+		if !exists {
+			ds.Processes = append(ds.Processes, info)
+		}
+
+		status.Devices[device.UUID] = ds
+	}
 
 }
 
 func OnDeviceStatus(d Device) {
 
-	ds, ok := status.Devices[d.Number]
+	ds, ok := status.Devices[d.UUID]
+
+	lock.Lock()
+	defer lock.Unlock()
 
 	if ok {
 		ds.Info = d
-		status.Devices[d.Number] = ds
+		status.Devices[d.UUID] = ds
 	} else {
-		status.Devices[d.Number] = DeviceStatus{Info: d, Claim: ClaimInfo{}}
+		log.Printf("New device %s (%d)", d.UUID, d.Number)
+
+		status.Devices[d.UUID] = DeviceStatus{Info: d, Claim: ClaimInfo{}}
 	}
 
 }
@@ -136,9 +215,7 @@ func main() {
 
 	flag.Parse()
 
-	monitor := &Monitor{}
-
-	if err := defaults.Set(monitor); err != nil {
+	if err := defaults.Set(&monitor); err != nil {
 		panic(err)
 	}
 
@@ -150,7 +227,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", serveRoot)
+	mux.HandleFunc("/", APIStatus)
 	mux.HandleFunc("/api", serveAPI)
 
 	bus.Subscribe("pmon:claim", OnClaim)

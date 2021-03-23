@@ -111,19 +111,20 @@ func (m *Monitor) dmon() error {
 			}
 
 			m.Mutex.Lock()
-			defer m.Mutex.Unlock()
 
 			device, err := m.find(values[0])
 
 			if err != nil {
 				log.Panicf("%s", err)
-
+				m.Mutex.Unlock()
 				continue
 			}
 
 			device.Memory = values[5]
 			device.Utilization = values[4]
 			device.Temperature = values[2]
+
+			m.Mutex.Unlock()
 
 			bus.Publish("dmon:update", *device)
 
@@ -214,8 +215,6 @@ func (m *Monitor) start() error {
 		for i, d := range smidata.Devices {
 
 			m.Devices[i] = Device{UUID: d.UUID, Number: d.Number, Brand: d.Brand, Memory: 0}
-
-			log.Printf("New device %s", d.UUID)
 
 		}
 
