@@ -9,8 +9,9 @@ import (
 	"net/http"
 	"net/rpc/jsonrpc"
 	"os"
+	"os/signal"
 	"strconv"
-	"sync"
+	"syscall"
 
 	"github.com/asaskevich/EventBus"
 	"github.com/creasty/defaults"
@@ -19,11 +20,43 @@ import (
 var (
 	listenUDS string = "/var/run/cogs.sock"
 	listenTCP string = ":9110"
-	binarySMI string = "nvidia-smi"
 	docker    string = "/var/run/docker.sock"
 
 	bus EventBus.Bus = EventBus.New()
 )
+
+func handleInterrupt() chan os.Signal {
+	sig := make(chan os.Signal, 1)
+
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	return sig
+}
+
+type ClaimInfo struct {
+	User     string `json:"user"`
+	Duration int64  `json:"duration"`
+}
+
+type ProcessInfo struct {
+	PID      int64  `json:"pid"`
+	Command  string `json:"command"`
+	Owner    string `json:"owner"`
+	Context  string `json:"context"`
+	Duration int64  `json:"duration"`
+}
+
+type DeviceStatus struct {
+	Info      Device        `json:"info"`
+	Claim     ClaimInfo     `json:"claim"`
+	Processes []ProcessInfo `json:"processes"`
+}
+
+type NodeStatus struct {
+	Devices map[int]DeviceStatus `json:"devices"`
+}
+
+var status NodeStatus = NodeStatus{Devices: make(map[int]DeviceStatus)}
 
 func lookupEnvOrString(key string, defaultVal string) string {
 	if val, ok := os.LookupEnv(key); ok {
@@ -65,7 +98,10 @@ func serveAPI(w http.ResponseWriter, req *http.Request) {
 }
 
 func OnClaim(c Claim) {
-	log.Printf("Claim %d: %d ", c.DeviceNumber, c.PID)
+	if c.PID == 0 {
+		log.Printf("Claim %d: none ", c.DeviceNumber)
+		return
+	}
 
 	user, err := identifyProcess(c.PID)
 
@@ -75,6 +111,19 @@ func OnClaim(c Claim) {
 	}
 
 	log.Printf("Claim %d: %s (pid: %d) ", c.DeviceNumber, user, c.PID)
+
+}
+
+func OnDeviceStatus(d Device) {
+
+	ds, ok := status.Devices[d.Number]
+
+	if ok {
+		ds.Info = d
+		status.Devices[d.Number] = ds
+	} else {
+		status.Devices[d.Number] = DeviceStatus{Info: d, Claim: ClaimInfo{}}
+	}
 
 }
 
@@ -100,35 +149,32 @@ func main() {
 		os.Exit(-1)
 	}
 
-	waiter := new(sync.WaitGroup)
-	waiter.Add(2)
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", serveRoot)
 	mux.HandleFunc("/api", serveAPI)
 
 	bus.Subscribe("pmon:claim", OnClaim)
+	bus.Subscribe("dmon:update", OnDeviceStatus)
 
-	/*
-		if listenUDS != "" {
-			listener, err := net.Listen("unix", listenUDS)
+	var udsSocket net.Listener = nil
+	var tcpSocket net.Listener = nil
 
-			if err != nil {
-				log.Fatalf("Unable to open UDS socket on %s: %s", listenUDS, err)
-				os.Exit(-1)
-			}
+	if listenUDS != "" {
+		udsSocket, err = net.Listen("unix", listenUDS)
 
-			go func() {
-				http.Serve(listener, mux)
-				waiter.Done()
-			}()
+		if err != nil {
+			log.Fatalf("Unable to open UDS socket on %s: %s", listenUDS, err)
+			os.Exit(-1)
+		}
 
-		} else {
-			waiter.Done()
-		}*/
+		go func() {
+			http.Serve(udsSocket, mux)
+		}()
+
+	}
 
 	if listenTCP != "" {
-		listener, err := net.Listen("tcp", listenTCP)
+		tcpSocket, err = net.Listen("tcp", listenTCP)
 
 		if err != nil {
 			log.Fatalf("Unable to open TCP socket on %s: %s", listenTCP, err)
@@ -136,13 +182,22 @@ func main() {
 		}
 
 		go func() {
-			http.Serve(listener, mux)
-			waiter.Done()
+			http.Serve(tcpSocket, mux)
 		}()
-
-	} else {
-		waiter.Done()
 	}
 
-	waiter.Wait()
+	<-handleInterrupt()
+
+	log.Print("Shutting down")
+
+	if listenUDS != "" {
+		udsSocket.Close()
+	}
+
+	if listenTCP != "" {
+		tcpSocket.Close()
+	}
+
+	os.Exit(0)
+
 }

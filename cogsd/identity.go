@@ -29,7 +29,7 @@ func pidToContainer(pid int) (string, error) {
 
 		line := strings.Trim(scanner.Text(), " ")
 
-		tokens := strings.SplitN(line, ":", 2)
+		tokens := strings.SplitN(line, ":", 3)
 
 		if strings.Compare(tokens[1], "cpuset") == 0 && strings.HasPrefix(tokens[2], "/docker/") {
 			return strings.TrimPrefix(tokens[2], "/docker/"), nil
@@ -37,7 +37,7 @@ func pidToContainer(pid int) (string, error) {
 
 	}
 
-	return "", nil
+	return "", errors.New("process does not belong to a container")
 }
 
 func connectDocker() *client.Client {
@@ -92,7 +92,7 @@ func identifyProcess(pid int) (string, error) {
 
 func findOwner(containerID string) (string, error) {
 
-	labels := [...]string{"user.email", "email", "maintainer"}
+	labels := [...]string{"ccc-user.email", "user.email", "email", "maintainer"}
 
 	user, found := userCache.Get(containerID)
 
@@ -117,7 +117,7 @@ func findOwner(containerID string) (string, error) {
 
 						address, err := mail.ParseAddress(value)
 
-						if err != nil {
+						if err == nil {
 
 							user := address.Address
 
@@ -136,7 +136,7 @@ func findOwner(containerID string) (string, error) {
 		}
 	}
 
-	return "", errors.New("User not found")
+	return "", errors.New("user not found")
 
 }
 

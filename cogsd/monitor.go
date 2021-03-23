@@ -31,14 +31,14 @@ type Monitor struct {
 }
 
 type Device struct {
-	UUID        string
-	Group       string
+	UUID        string `json:"uuid"`
+	Group       string `json:"group"`
 	Name        string
-	Brand       string
-	Number      int
-	Memory      int
-	Utilization int
-	Temperature int
+	Brand       string `json:"brand"`
+	Number      int    `json:"number"`
+	Memory      int    `json:"memory"`
+	Utilization int    `json:"utilization"`
+	Temperature int    `json:"temperature"`
 }
 
 type Claim struct {
@@ -110,6 +110,9 @@ func (m *Monitor) dmon() error {
 				continue
 			}
 
+			m.Mutex.Lock()
+			defer m.Mutex.Unlock()
+
 			device, err := m.find(values[0])
 
 			if err != nil {
@@ -121,6 +124,8 @@ func (m *Monitor) dmon() error {
 			device.Memory = values[5]
 			device.Utilization = values[4]
 			device.Temperature = values[2]
+
+			bus.Publish("dmon:update", *device)
 
 		}
 
