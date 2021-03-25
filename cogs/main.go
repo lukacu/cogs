@@ -1,12 +1,13 @@
 package main
 
+// https://github.com/olekukonko/tablewriter
+
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/ttacon/chalk"
 )
 
 type Device struct {
@@ -174,7 +177,41 @@ func status(server string) error {
 
 	for _, device := range devices {
 
-		log.Printf("%d %d %d", device.Info.Number, device.Info.Utilization, device.Info.Memory)
+		var lineStyle, utilizationStyle chalk.Color
+
+		if device.Info.Utilization == 0 {
+			lineStyle = chalk.Green
+		} else if device.Claim.User != "" {
+			lineStyle = chalk.Red
+		} else {
+			lineStyle = chalk.Yellow
+		}
+
+		if device.Info.Utilization > 0 {
+			utilizationStyle = chalk.Red
+		} else {
+			utilizationStyle = chalk.ResetColor
+		}
+
+		fmt.Print(chalk.ResetColor)
+
+		fmt.Printf("%s%-10d", lineStyle, device.Info.Number)
+		fmt.Printf("|  %s%10d%%", utilizationStyle, device.Info.Utilization)
+		fmt.Printf("|  %s%10d%%", lineStyle, device.Info.Memory)
+		fmt.Printf("|  %s (%d)\n", device.Claim.User, device.Claim.Duration)
+
+		for _, process := range device.Processes {
+
+			var processStyle chalk.Color
+
+			if process.Owner == device.Claim.User {
+				processStyle = chalk.Green
+			} else {
+				processStyle = chalk.Red
+			}
+
+			fmt.Printf("%s * %d: %s [%s]\n", processStyle, process.PID, process.Owner, process.Command)
+		}
 
 	}
 

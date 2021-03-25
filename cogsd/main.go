@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"io"
@@ -101,6 +102,18 @@ func APIStatus(w http.ResponseWriter, req *http.Request) {
 	w.Header().Add("Content-Length", strconv.Itoa(len(data)))
 
 	w.Write(data)
+
+	conn := GetConn(req)
+
+	if conn.RemoteAddr().Network() == "unix" {
+		handle, err := conn.(*net.UnixConn).File()
+		if err == nil {
+			cred, err := syscall.GetsockoptUcred(int(handle.Fd()), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+			if err == nil {
+				log.Println(cred.Pid)
+			}
+		}
+	}
 
 }
 
@@ -206,6 +219,19 @@ func OnDeviceStatus(d Device) {
 
 }
 
+type contextKey struct {
+	key string
+}
+
+var ConnContextKey = &contextKey{"http-conn"}
+
+func SaveConnInContext(ctx context.Context, c net.Conn) context.Context {
+	return context.WithValue(ctx, ConnContextKey, c)
+}
+func GetConn(r *http.Request) net.Conn {
+	return r.Context().Value(ConnContextKey).(net.Conn)
+}
+
 func main() {
 
 	flag.StringVar(&listenUDS, "listen-uds", lookupEnvOrString("COGS_UDS_SOCKET", listenUDS), "Listen on Unix Domain socket")
@@ -245,7 +271,8 @@ func main() {
 		}
 
 		go func() {
-			http.Serve(udsSocket, mux)
+			server := &http.Server{Handler: mux, ConnContext: SaveConnInContext}
+			server.Serve(udsSocket)
 		}()
 
 	}
@@ -259,7 +286,8 @@ func main() {
 		}
 
 		go func() {
-			http.Serve(tcpSocket, mux)
+			server := &http.Server{Handler: mux, ConnContext: SaveConnInContext}
+			server.Serve(tcpSocket)
 		}()
 	}
 

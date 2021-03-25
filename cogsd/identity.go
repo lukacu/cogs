@@ -1,10 +1,13 @@
 package main
 
+// https://github.com/natefinch/pie
+
 import (
 	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/mail"
 	"os"
@@ -20,7 +23,7 @@ func pidToContainer(pid int) (string, error) {
 
 	file, err := os.Open(fmt.Sprintf("/proc/%d/cgroup", pid))
 	if err != nil {
-		return "", nil
+		return "", errors.New("process does not exist")
 	}
 	defer file.Close()
 
@@ -38,6 +41,25 @@ func pidToContainer(pid int) (string, error) {
 	}
 
 	return "", errors.New("process does not belong to a container")
+}
+
+func pidToCommand(pid int) (string, error) {
+
+	file, err := os.Open(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return "", errors.New("process does not exist")
+	}
+	defer file.Close()
+
+	data, err := ioutil.ReadAll(file)
+
+	if err != nil {
+		return "", errors.New("process does not exist")
+	}
+
+	command := strings.ReplaceAll(string(data), "\000", " ")
+
+	return command, nil
 }
 
 func connectDocker() *client.Client {
@@ -86,13 +108,19 @@ func identifyProcess(pid int) (ProcessInfo, error) {
 		return ProcessInfo{}, err
 	}
 
+	command, err := pidToCommand(pid)
+
+	if err != nil {
+		return ProcessInfo{}, err
+	}
+
 	owner, err := findOwner(container)
 
 	if err != nil {
 		return ProcessInfo{}, err
 	}
 
-	return ProcessInfo{PID: pid, Owner: owner, Context: container}, nil
+	return ProcessInfo{PID: pid, Owner: owner, Command: command, Context: container}, nil
 
 }
 
@@ -115,9 +143,9 @@ func findOwner(containerID string) (string, error) {
 	for _, container := range list {
 		if strings.Compare(container.ID, containerID) == 0 {
 
-			for name, value := range container.Labels {
+			for _, label := range labels {
 
-				for _, label := range labels {
+				for name, value := range container.Labels {
 
 					if strings.Compare(label, name) == 0 {
 
